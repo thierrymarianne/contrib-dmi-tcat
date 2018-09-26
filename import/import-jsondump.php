@@ -2,15 +2,17 @@
 
 if ($argc < 1)
     die; // only run from command line
+
 include_once __DIR__ . '/../config.php';
 include_once __DIR__ . '/../common/constants.php';
 include_once __DIR__ . '/../common/functions.php';
 include_once __DIR__ . '/../capture/common/functions.php';
 
-// specify the name of the bin here 
-$bin_name = '';
+// specify the name of the bin here
+$bin_name = 'vue_js';
+
 // specify dir with the user timelines (json)
-$dir = '';
+$dir = '/var/www/dmi-tcat/json';
 // set type of dump ('import follow' or 'import track')
 $type = 'import track';
 // if 'import track', specify keywords for which data was captured
@@ -25,19 +27,28 @@ if (dbserver_has_utf8mb4_support() == false) {
 $querybin_id = queryManagerBinExists($bin_name);
 
 $dbh = pdo_connect();
+
 create_bin($bin_name, $dbh);
+
 queryManagerCreateBinFromExistingTables($bin_name, $querybin_id, $type, $queries);
 
 $all_files = glob("$dir/*.json");
 
 global $tweets_processed, $tweets_failed, $tweets_success,
  $valid_timeline, $empty_timeline, $invalid_timeline, $populated_timeline,
- $total_timeline, $all_users, $all_tweet_ids;
+ $total_timeline;
 
-$all_users = $all_tweet_ids = array();
-$tweets_processed = $tweets_failed = $tweets_success = $valid_timeline = $empty_timeline = $invalid_timeline = $populated_timeline = $total_timeline = 0;
+$tweets_processed = $tweets_failed = $tweets_success = $valid_timeline =
+$empty_timeline = $invalid_timeline = $populated_timeline = $total_timeline = 0;
+
 $count = count($all_files);
 $c = $count;
+
+$stats = (object)[
+    'processed' => 0,
+    'tweet_ids' => [],
+    'all_users' => [],
+];
 
 for ($i = 0; $i < $count; ++$i) {
     $filepath = $all_files[$i];
@@ -49,7 +60,7 @@ for ($i = 0; $i < $count; ++$i) {
 function process_json_file_timeline($filepath, $dbh) {
     global $tweets_processed, $tweets_failed, $tweets_success,
     $valid_timeline, $empty_timeline, $invalid_timeline, $populated_timeline,
-    $total_timeline, $all_tweet_ids, $all_users, $bin_name;
+    $total_timeline, $bin_name, $stats;
 
     $tweetQueue = new TweetQueue();
 
@@ -57,12 +68,16 @@ function process_json_file_timeline($filepath, $dbh) {
 
     ini_set('auto_detect_line_endings', true);
 
-    $handle = @fopen($filepath, "r");
-    if ($handle) {
-        while (($buffer = fgets($handle, 40960)) !== false) {
-            $tweet = json_decode($buffer, true);
-            //var_export($tweet); print "\n\n";
-            $buffer = "";
+    $contents = file_get_contents($filepath);
+    $lines = explode(PHP_EOL, $contents);
+
+    array_walk($lines,
+        function ($line) use ($tweetQueue, $bin_name, $stats) {
+            $tweet = json_decode(str_replace('\"', "\'", $line), true);
+
+            if ($tweet === null) {
+                return;
+            }
 
             $t = new Tweet();
             $t->fromJSON($tweet);
@@ -72,19 +87,13 @@ function process_json_file_timeline($filepath, $dbh) {
                     $tweetQueue->insertDB();
                 }
 
-                $all_users[] = $t->from_user_id;
-                $all_tweet_ids[] = $t->id;
+                $stats->all_users[] = $t->from_user_id;
+                $stats->tweet_ids[] = $t->id;
 
-                $tweets_processed++;
+                $stats->processed++;
             }
-
-            print ".";
         }
-        if (!feof($handle)) {
-            echo "Error: unexpected fgets() fail\n";
-        }
-        fclose($handle);
-    }
+    );
 
     if ($tweetQueue->length() > 0) {
         $tweetQueue->insertDB();
@@ -94,11 +103,11 @@ function process_json_file_timeline($filepath, $dbh) {
 queryManagerSetPeriodsOnCreation($bin_name);
 
 print "\n\n\n\n";
-print "Number of tweets: " . count($all_tweet_ids) . "\n";
-print "Unique tweets: " . count(array_unique($all_tweet_ids)) . "\n";
-print "Unique users: " . count(array_unique($all_users)) . "\n";
+print "Number of tweets: " . count($stats->tweet_ids) . "\n";
+print "Unique tweets: " . count(array_unique($stats->tweet_ids)) . "\n";
+print "Unique users: " . count(array_unique($stats->all_users)) . "\n";
 
-print "Processed $tweets_processed tweets!\n";
+print "Processed $stats->processed tweets!\n";
 //print "Failed storing $tweets_failed tweets!\n";
 //print "Succesfully stored $tweets_success tweets!\n";
 print "\n";
@@ -107,4 +116,3 @@ print "Valid timelines: $valid_timeline\n";
 print "Invalid timelines: $invalid_timeline\n";
 print "Populated timelines: $populated_timeline\n";
 print "Empty timelines: $empty_timeline\n";
-?>
